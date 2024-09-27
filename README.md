@@ -1,2 +1,12 @@
-# busca_chave
-buscador de chave do desafio puzzle bitcoin
+# Busca Chave Bitcoin Puzzle
+
+Buscador de chave do desafio puzzle bitcoin
+
+## Para rodar
+`pip install pycuda`
+
+Crie um arquivo chamado **intervalos.txt** e salve dentro dele os intervalos a serem buscados no seguinte formato:
+```
+80:ff
+1000:1fff
+ ```
