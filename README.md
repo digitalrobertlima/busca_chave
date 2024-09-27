@@ -2,8 +2,8 @@
 
 Buscador de chave do desafio puzzle bitcoin
 
-## Para rodar
-`pip install pycuda`
+## Para interagir com a GPU
+`pip install pycuda tqdm`
 
 Crie um arquivo chamado **intervalos.txt** e salve dentro dele os intervalos a serem buscados no seguinte formato:
 ```
