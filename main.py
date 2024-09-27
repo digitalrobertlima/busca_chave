@@ -46,26 +46,24 @@ def encode_base58(b):
             break
     return b''.join(arr[::-1]).decode('utf-8')
 
-# Função para carregar endereços Bitcoin com saldo do arquivo
-def carregar_enderecos_com_saldo(arquivo):
-    enderecos = {}
+# Função para carregar endereços Bitcoin do arquivo
+def carregar_enderecos(arquivo):
+    enderecos = set()
     with open(arquivo, "r") as f:
         for linha in f:
             partes = linha.strip().split()
-            if len(partes) >= 5:
+            if len(partes) >= 2:
                 endereco = partes[1]
-                saldo = float(partes[3])
-                if saldo > 0:
-                    enderecos[endereco] = saldo
+                enderecos.add(endereco)
     return enderecos
 
-# Função para salvar chaves privadas com saldo positivo
-def salvar_chave(chave_privada_hex, endereco, saldo, arquivo='chaves_com_saldo.txt'):
+# Função para salvar chaves privadas encontradas
+def salvar_chave(chave_privada_hex, endereco, arquivo='chaves_encontradas.txt'):
     with open(arquivo, 'a') as f:
-        f.write(f'{chave_privada_hex} {endereco} {saldo}\n')
+        f.write(f'{chave_privada_hex} {endereco}\n')
 
 # Função para buscar chaves em um intervalo utilizando a CPU
-def busca_cpu(inicio, fim, enderecos_com_saldo):
+def busca_cpu(inicio, fim, enderecos):
     total = fim - inicio
     keys_processed = 0
     start_time = time.time()
@@ -76,12 +74,11 @@ def busca_cpu(inicio, fim, enderecos_com_saldo):
             if len(chave_privada_hex) < 64:
                 chave_privada_hex = chave_privada_hex.zfill(64)  # Preenche com zeros à esquerda
             endereco = gerar_endereco_bitcoin(chave_privada_hex)
-            
-            # Verificar se o endereço está no dicionário e possui saldo
-            if endereco in enderecos_com_saldo:
-                saldo = enderecos_com_saldo[endereco]
-                print(f'-> Encontrado! Chave Privada: {chave_privada_hex}, Endereço: {endereco}, Saldo: {saldo}')
-                salvar_chave(chave_privada_hex, endereco, saldo)
+
+            # Verificar se o endereço está no conjunto de endereços
+            if endereco in enderecos:
+                print(f'-> Encontrado! Chave Privada: {chave_privada_hex}, Endereço: {endereco}')
+                salvar_chave(chave_privada_hex, endereco)
 
             keys_processed += 1
             pbar.update(1)
@@ -95,14 +92,12 @@ def busca_cpu(inicio, fim, enderecos_com_saldo):
                 keys_processed = 0
 
 # Função para buscar chaves em um intervalo utilizando a GPU
-def busca_gpu(inicio, fim, enderecos_com_saldo):
+def busca_gpu(inicio, fim, enderecos):
     # Definir o módulo CUDA
     mod = SourceModule("""
-    __global__ void busca_chaves(unsigned long long *chaves, unsigned long long *enderecos, int *resultados, int total) {
+    __global__ void busca_chaves(unsigned long long *chaves, unsigned long long *resultados, int total) {
         int idx = threadIdx.x + blockIdx.x * blockDim.x;
         if (idx < total) {
-            // Aqui você pode implementar uma lógica de busca na GPU
-            // Por exemplo, copiar a chave para resultados (simulação)
             resultados[idx] = chaves[idx];
         }
     }
@@ -123,7 +118,7 @@ def busca_gpu(inicio, fim, enderecos_com_saldo):
 
             # Preparar os dados para a GPU
             chaves = np.array(range(batch_start, batch_end), dtype=np.uint64)
-            resultados = np.zeros(current_batch_size, dtype=np.int32)
+            resultados = np.zeros(current_batch_size, dtype=np.uint64)
 
             # Alocar memória na GPU
             chaves_gpu = cuda.mem_alloc(chaves.nbytes)
@@ -133,26 +128,25 @@ def busca_gpu(inicio, fim, enderecos_com_saldo):
             cuda.memcpy_htod(chaves_gpu, chaves)
 
             # Executar o kernel
-            func(chaves_gpu, resultados_gpu, np.int32(0), np.int32(current_batch_size), block=(256, 1, 1), grid=(int(np.ceil(current_batch_size / 256)), 1))
+            func(chaves_gpu, resultados_gpu, np.int32(current_batch_size), block=(256, 1, 1), grid=(int(np.ceil(current_batch_size / 256)), 1))
 
             # Copiar resultados de volta para a CPU
             cuda.memcpy_dtoh(resultados, resultados_gpu)
 
             # Processar os resultados
-            for i in range(current_batch_size):
-                chave_privada = resultados[i]
+            for chave_privada in resultados:
                 chave_privada_hex = hex(chave_privada)[2:].zfill(64)
                 endereco = gerar_endereco_bitcoin(chave_privada_hex)
-                
-                if endereco in enderecos_com_saldo:
-                    saldo = enderecos_com_saldo[endereco]
-                    print(f'-> Encontrado! Chave Privada: {chave_privada_hex}, Endereço: {endereco}, Saldo: {saldo}')
-                    salvar_chave(chave_privada_hex, endereco, saldo)
+
+                # Verificar se o endereço está no conjunto de endereços
+                if endereco in enderecos:
+                    print(f'-> Encontrado! Chave Privada: {chave_privada_hex}, Endereço: {endereco}')
+                    salvar_chave(chave_privada_hex, endereco)
 
             keys_processed += current_batch_size
             pbar.update(current_batch_size)
 
-            # Calcular e exibir chaves por segundo a cada 1024 chaves
+            # Calcular e exibir chaves por segundo a cada batch_size chaves
             if keys_processed >= batch_size:
                 elapsed_time = time.time() - start_time
                 cps = keys_processed / elapsed_time if elapsed_time > 0 else 0
@@ -172,9 +166,9 @@ def carregar_intervalos(arquivo):
     return intervalos
 
 if __name__ == "__main__":
-    # Carregar endereços com saldo
-    enderecos_com_saldo = carregar_enderecos_com_saldo("bitcoin_address.txt")
-    print(f'Total de endereços com saldo: {len(enderecos_com_saldo)}')
+    # Carregar endereços
+    enderecos = carregar_enderecos("bitcoin_address.txt")
+    print(f'Total de endereços carregados: {len(enderecos)}')
 
     # Carregar intervalos
     intervalos = carregar_intervalos("intervalos.txt")
@@ -185,9 +179,9 @@ if __name__ == "__main__":
         print(f'\nProcessando intervalo: {hex(inicio)} a {hex(fim)}')
 
         # Executar busca em CPU
-        busca_cpu(inicio, fim, enderecos_com_saldo)
+        busca_cpu(inicio, fim, enderecos)
 
         # Executar busca em GPU
-        busca_gpu(inicio, fim, enderecos_com_saldo)
+        busca_gpu(inicio, fim, enderecos)
 
     print("Busca concluída.")
