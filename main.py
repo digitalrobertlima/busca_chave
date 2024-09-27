@@ -5,6 +5,8 @@ import pycuda.autoinit
 import pycuda.driver as cuda
 from pycuda.compiler import SourceModule
 import numpy as np
+from tqdm import tqdm
+import time
 
 # Função para gerar um endereço Bitcoin a partir de uma chave privada
 def gerar_endereco_bitcoin(chave_privada_hex):
@@ -47,13 +49,32 @@ def encode_base58(b):
 
 # Função para buscar chaves em um intervalo utilizando a CPU
 def busca_cpu(inicio, fim):
-    for chave_privada in range(inicio, fim):
-        chave_privada_hex = hex(chave_privada)[2:]  # Remove o '0x'
-        if len(chave_privada_hex) < 64:
-            chave_privada_hex = chave_privada_hex.zfill(64)  # Preenche com zeros à esquerda
-        endereco = gerar_endereco_bitcoin(chave_privada_hex)
-        # Aqui você pode adicionar a lógica para verificar o saldo ou outras condições
-        print(f'Chave Privada: {chave_privada_hex}, Endereço: {endereco}')
+    total = fim - inicio
+    keys_processed = 0
+    start_time = time.time()
+
+    with tqdm(total=total, desc='Buscando na CPU', unit='chave') as pbar:
+        for chave_privada in range(inicio, fim):
+            chave_privada_hex = hex(chave_privada)[2:]  # Remove o '0x'
+            if len(chave_privada_hex) < 64:
+                chave_privada_hex = chave_privada_hex.zfill(64)  # Preenche com zeros à esquerda
+            endereco = gerar_endereco_bitcoin(chave_privada_hex)
+            # Aqui você pode adicionar a lógica para verificar o saldo ou outras condições
+            # Por exemplo:
+            # saldo = verificar_saldo(endereco)
+            # if saldo > 0:
+            #     salvar_chave(chave_privada_hex, endereco, saldo)
+
+            keys_processed += 1
+            pbar.update(1)
+
+            # Calcular e exibir chaves por segundo a cada 1000 chaves
+            if keys_processed % 1000 == 0:
+                elapsed_time = time.time() - start_time
+                cps = keys_processed / elapsed_time
+                print(f'Chaves por segundo (CPU): {cps:.2f}')
+                start_time = time.time()
+                keys_processed = 0
 
 # Função para buscar chaves em um intervalo utilizando a GPU
 def busca_gpu(inicio, fim):
@@ -68,39 +89,73 @@ def busca_gpu(inicio, fim):
     }
     """)
 
-    # Alocar memória na GPU
-    chaves_gpu = cuda.mem_alloc(np.array(range(inicio, fim), dtype=np.uint64).nbytes)
-    resultados_gpu = cuda.mem_alloc(1024 * np.dtype(np.int).itemsize)  # Supondo 1024 resultados
-
-    # Copiar dados para a GPU
-    cuda.memcpy_htod(chaves_gpu, np.array(range(inicio, fim), dtype=np.uint64))
-
-    # Executar o kernel
+    # Definir o kernel
     func = mod.get_function("busca_chaves")
-    func(chaves_gpu, resultados_gpu, block=(256, 1, 1), grid=(4, 1))
 
-    # Copiar resultados de volta para a CPU
-    resultados = np.empty(1024, dtype=np.int)
-    cuda.memcpy_dtoh(resultados, resultados_gpu)
+    total = fim - inicio
+    batch_size = 1024  # Número de chaves processadas por vez na GPU
+    keys_processed = 0
+    start_time = time.time()
 
-    print("Resultados da busca na GPU:")
-    for r in resultados:
-        print(r)
+    with tqdm(total=total, desc='Buscando na GPU', unit='chave') as pbar:
+        for batch_start in range(inicio, fim, batch_size):
+            batch_end = min(batch_start + batch_size, fim)
+            current_batch_size = batch_end - batch_start
+
+            # Preparar os dados para a GPU
+            chaves = np.array(range(batch_start, batch_end), dtype=np.uint64)
+            resultados = np.zeros(current_batch_size, dtype=np.int32)
+
+            # Alocar memória na GPU
+            chaves_gpu = cuda.mem_alloc(chaves.nbytes)
+            resultados_gpu = cuda.mem_alloc(resultados.nbytes)
+
+            # Copiar dados para a GPU
+            cuda.memcpy_htod(chaves_gpu, chaves)
+
+            # Executar o kernel
+            func(chaves_gpu, resultados_gpu, block=(256, 1, 1), grid=(int(np.ceil(current_batch_size / 256)), 1))
+
+            # Copiar resultados de volta para a CPU
+            cuda.memcpy_dtoh(resultados, resultados_gpu)
+
+            # Processar os resultados (aqui apenas simulando)
+            # Você pode adicionar a lógica para verificar saldo ou outras condições
+
+            keys_processed += current_batch_size
+            pbar.update(current_batch_size)
+
+            # Calcular e exibir chaves por segundo a cada 1024 chaves
+            if keys_processed >= batch_size:
+                elapsed_time = time.time() - start_time
+                cps = keys_processed / elapsed_time
+                print(f'Chaves por segundo (GPU): {cps:.2f}')
+                start_time = time.time()
+                keys_processed = 0
 
 # Carregar intervalos de chaves a partir do arquivo
-with open("intervalos.txt", "r") as f:
-    intervalos = f.readlines()
+def carregar_intervalos(arquivo):
+    intervalos = []
+    with open(arquivo, "r") as f:
+        for linha in f:
+            inicio, fim = linha.strip().split(":")
+            inicio = int(inicio, 16)  # Converte para inteiro
+            fim = int(fim, 16)        # Converte para inteiro
+            intervalos.append((inicio, fim))
+    return intervalos
 
-# Processar cada intervalo
-for intervalo in intervalos:
-    inicio, fim = intervalo.strip().split(":")
-    inicio = int(inicio, 16)  # Converte para inteiro
-    fim = int(fim, 16)        # Converte para inteiro
+if __name__ == "__main__":
+    intervalos = carregar_intervalos("intervalos.txt")
 
-    # Executar busca em CPU
-    print(f'Buscando na CPU entre {hex(inicio)} e {hex(fim)}')
-    busca_cpu(inicio, fim)
+    # Processar cada intervalo
+    for intervalo in intervalos:
+        inicio, fim = intervalo
+        print(f'\nProcessando intervalo: {hex(inicio)} a {hex(fim)}')
 
-    # Executar busca em GPU
-    print(f'Buscando na GPU entre {hex(inicio)} e {hex(fim)}')
-    busca_gpu(inicio, fim)
+        # Executar busca em CPU
+        busca_cpu(inicio, fim)
+
+        # Executar busca em GPU
+        busca_gpu(inicio, fim)
+
+    print("Busca concluída.")
